@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Prospection">
 <title>Prospection autour de moi</title>
@@ -125,7 +126,7 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
   <button class="more" id="more" type="button" hidden>Voir plus de lieux</button>
   <button class="linkbtn" id="clear" type="button" hidden>Effacer la recherche mémorisée sur ce téléphone</button>
 
-  <p class="foot">Niveau 1 : magasins. Niveau 2 : hôtels. Niveau 3 : hôpitaux, écoles, mairies. Les lieux sont classés par niveau, puis par distance. La taille est la tranche d'effectif de l'établissement, fournie par Sirene quand elle existe. Les établissements qui ont demandé à masquer leur adresse n'apparaissent pas. Sirene ne fournit pas de numéro de téléphone. Fond de carte : © contributeurs OpenStreetMap.</p>
+  <p class="foot">Niveau 1 : magasins. Niveau 2 : hôtels. Niveau 3 : hôpitaux, écoles, mairies. Les lieux sont classés par niveau, puis par distance. La taille est la tranche d'effectif de l'établissement, fournie par Sirene quand elle existe. Les établissements qui ont demandé à masquer leur adresse n'apparaissent pas. Sirene ne fournit pas de numéro de téléphone. Fond de carte : © IGN, ou © contributeurs OpenStreetMap en secours.</p>
 
   <details class="tech">
     <summary>Détails techniques</summary>
@@ -247,12 +248,21 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
   var mapObj=null,mapLayer=null,mapKey="",mapSig="",leafletState=0;
   function loadLeaflet(done){
     if(window.L){done(true);return;}
-    var n=0,failed=false;
-    function one(ok){if(failed)return;if(!ok){failed=true;done(false);return;}n++;if(n===2)done(!!window.L);}
-    var l=document.createElement("link");l.rel="stylesheet";l.href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    l.onload=function(){one(true);};l.onerror=function(){one(false);};document.head.appendChild(l);
-    var s=document.createElement("script");s.src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    s.onload=function(){one(true);};s.onerror=function(){one(false);};document.head.appendChild(s);
+    var bases=["https://unpkg.com/leaflet@1.9.4/dist/","https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/"];
+    function tryBase(i){
+      if(i>=bases.length){state.mapErrorMsg="bibliothèque de carte injoignable";done(false);return;}
+      var n=0,failed=false;
+      function one(ok){
+        if(failed)return;
+        if(!ok){failed=true;log("Carte : échec de chargement depuis "+bases[i]);tryBase(i+1);return;}
+        n++;if(n===2){if(window.L)done(true);else{failed=true;tryBase(i+1);}}
+      }
+      var l=document.createElement("link");l.rel="stylesheet";l.href=bases[i]+"leaflet.css";
+      l.onload=function(){one(true);};l.onerror=function(){one(false);};document.head.appendChild(l);
+      var sc=document.createElement("script");sc.src=bases[i]+"leaflet.js";
+      sc.onload=function(){one(true);};sc.onerror=function(){one(false);};document.head.appendChild(sc);
+    }
+    tryBase(0);
   }
   function popupHtml(p){
     var ll=p.lat.toFixed(6)+","+p.lon.toFixed(6);
@@ -260,6 +270,23 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
     return "<strong>"+esc(p.name)+"</strong>"+esc(p.type)+" · "+km(p.d)+" km<br>"+esc(eff)+"<br>"+
       '<a href="https://maps.apple.com/?daddr='+ll+'&amp;dirflg=d" target="_blank" rel="noopener">Plans</a>'+
       '<a href="https://www.google.com/maps/dir/?api=1&amp;destination='+ll+'" target="_blank" rel="noopener">Google Maps</a>';
+  }
+  var PROV=[
+    {n:"IGN",u:"https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/png&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",a:"© IGN",z:18},
+    {n:"OpenStreetMap",u:"https://tile.openstreetmap.org/{z}/{x}/{y}.png",a:"© OpenStreetMap",z:19}
+  ];
+  var tileLayerCur=null;
+  function useProvider(i){
+    if(tileLayerCur)mapObj.removeLayer(tileLayerCur);
+    var pr=PROV[i],errs=0,ok=0;
+    log("Fond de carte : "+pr.n);
+    tileLayerCur=L.tileLayer(pr.u,{maxZoom:pr.z,attribution:pr.a,referrerPolicy:"strict-origin-when-cross-origin"});
+    tileLayerCur.on("tileload",function(){ok++;});
+    tileLayerCur.on("tileerror",function(){
+      errs++;
+      if(i+1<PROV.length&&ok===0&&errs>=3){log("Fond de carte "+pr.n+" indisponible, bascule sur "+PROV[i+1].n);useProvider(i+1);}
+    });
+    tileLayerCur.addTo(mapObj);
   }
   function drawMap(list){
     if(state.view!=="map"||!state.pos)return;
@@ -271,8 +298,8 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
     }
     try{
       if(!mapObj){
-        mapObj=L.map(elMap);
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(mapObj);
+        mapObj=L.map(elMap).setView([state.pos.lat,state.pos.lon],12);
+        useProvider(0);
         mapLayer=L.layerGroup().addTo(mapObj);
       }
       mapObj.invalidateSize();
@@ -281,14 +308,14 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
       if(sig===mapSig)return;
       mapSig=sig;
       mapLayer.clearLayers();
-      var circle=L.circle([state.pos.lat,state.pos.lon],{radius:state.radius*1000,color:"#0b5c73",weight:1,fillOpacity:0.04}).addTo(mapLayer);
+      L.circle([state.pos.lat,state.pos.lon],{radius:state.radius*1000,color:"#0b5c73",weight:1,fillOpacity:0.04}).addTo(mapLayer);
       L.circleMarker([state.pos.lat,state.pos.lon],{radius:8,color:"#ffffff",weight:3,fillColor:"#1a73e8",fillOpacity:1}).addTo(mapLayer).bindTooltip("Point de recherche");
       list.forEach(function(p){
         L.circleMarker([p.lat,p.lon],{radius:9,color:"#ffffff",weight:2,fillColor:TIERCOL[p.tier],fillOpacity:1}).addTo(mapLayer).bindPopup(popupHtml(p));
       });
-      if(key!==mapKey){mapKey=key;mapObj.fitBounds(circle.getBounds());}
+      if(key!==mapKey){mapKey=key;mapObj.fitBounds(L.latLng(state.pos.lat,state.pos.lon).toBounds(state.radius*2000));}
     }catch(e){
-      log("ERREUR carte : "+((e&&e.message)||e));state.mapError=true;
+      state.mapErrorMsg=(e&&e.message)||String(e);log("ERREUR carte : "+state.mapErrorMsg);state.mapError=true;
     }
   }
 
@@ -448,7 +475,7 @@ details.tech pre{white-space:pre-wrap;word-break:break-word;background:var(--sur
     var parts=Object.keys(state.partial).filter(function(k){return state.partial[k];});
     if(parts.length)warn+='<div class="note">Zone très dense : la liste du niveau '+parts.join(", ")+' est incomplète. Réduisez le rayon pour tout voir.</div>';
     if(state.savedAt&&!state.loading)warn='<div class="note">Résultats enregistrés '+ago(state.savedAt)+'. Touchez « Me localiser » pour actualiser.</div>'+warn;
-    if(state.mapError&&state.view==="map")warn+='<div class="err">La carte n\'a pas pu être chargée. Vérifiez la connexion ou utilisez la liste.</div>';
+    if(state.mapError&&state.view==="map")warn+='<div class="err">La carte n\'a pas pu s\'afficher'+(state.mapErrorMsg?' ('+esc(state.mapErrorMsg)+')':'')+'. Vérifiez la connexion ou utilisez la liste.</div>';
     elMsg.innerHTML=warn;
     var isMap=state.view==="map"&&!state.mapError;
     elMap.hidden=!isMap;elList.hidden=isMap;
